@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-path name="external_storage" path="." />
+    <root-path name="all_storage_volumes" path="." />
+    <cache-path name="shared_cache" path="shared/" />
+    <files-path name="internal_files" path="exports/" />
+</paths>

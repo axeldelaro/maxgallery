@@ -1,0 +1,14 @@
+# Gradle & Android Studio
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Downloaded AI models (fetched automatically at preBuild via downloadFaceModels)
+app/src/main/assets/models/*.tflite
+app/src/main/assets/models/*.part

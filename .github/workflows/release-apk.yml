@@ -1,0 +1,96 @@
+name: Build & Release Signed APK (HyperGallery AI)
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release-apk:
+    name: Build Signed Release APKs (arm64-v8a & universal)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Download Offline AI Models & Assemble Signed Release APKs
+        run: ./gradlew downloadFaceModels assembleRelease --stacktrace
+
+      - name: Audit Offline Privacy Guarantee (Zero INTERNET Permission)
+        run: |
+          AAPT2=$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort -V | tail -n 1)
+          echo "Using aapt2: $AAPT2"
+          PERMS=$("$AAPT2" dump permissions app/build/outputs/apk/release/HyperGallery-AI-arm64-v8a-release.apk)
+          echo "$PERMS"
+          if echo "$PERMS" | grep -q "android.permission.INTERNET"; then
+            echo "FATAL: INTERNET permission detected in release APK!"
+            exit 1
+          fi
+          echo "VERIFIED: Zero network permissions in final signed APK."
+          ls -lh app/build/outputs/apk/release/HyperGallery-AI-*.apk
+
+      - name: Upload Signed APKs as GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: HyperGallery-AI-Signed-Release-APKs
+          path: |
+            app/build/outputs/apk/release/HyperGallery-AI-arm64-v8a-release.apk
+            app/build/outputs/apk/release/HyperGallery-AI-universal-release.apk
+          if-no-files-found: error
+
+      - name: Publish / Update Public GitHub Release (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          if [[ "$TAG_NAME" != v* ]]; then
+            TAG_NAME="v1.0.0"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f "$TAG_NAME" "$GITHUB_SHA"
+          git push origin "$TAG_NAME" --force
+
+          NOTES="## HyperGallery AI — APK Natif Signé (100 % Hors-Ligne & Privé)
+          - **Zéro permission Internet** (\`android.permission.INTERNET\` absente du manifeste final)
+          - **IA Locale Embarquée** : BlazeFace + Alignement Affine 5 points + MobileFaceNet 192-D + DBSCAN + Détecteur de doublons 64-bit \`dHash\`
+          - **Sécurité Matérielle** : Verrouillage de dossier sur place (\`BiometricPrompt\`) + Coffre-Fort chiffré **AES-256-GCM** (\`Android Keystore\`) avec déchiffrement en flux RAM et \`FLAG_SECURE\`
+          - **Ultra-Rapide 120 Hz** : Jetpack Compose Material 3 Noir Pur AMOLED, Room WAL + Paging 3, support Pro RAW, Visionneuse tuilée 25x, Diaporama Ken Burns IA & Lecteur Vidéo Media3 ExoPlayer gestuel."
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" \
+              app/build/outputs/apk/release/HyperGallery-AI-arm64-v8a-release.apk \
+              app/build/outputs/apk/release/HyperGallery-AI-universal-release.apk \
+              --clobber
+            gh release edit "$TAG_NAME" --title "HyperGallery AI $TAG_NAME (Signed Production APK)" --notes "$NOTES" --latest
+          else
+            gh release create "$TAG_NAME" \
+              app/build/outputs/apk/release/HyperGallery-AI-arm64-v8a-release.apk \
+              app/build/outputs/apk/release/HyperGallery-AI-universal-release.apk \
+              --title "HyperGallery AI $TAG_NAME (Signed Production APK)" \
+              --notes "$NOTES" \
+              --latest
+          fi
