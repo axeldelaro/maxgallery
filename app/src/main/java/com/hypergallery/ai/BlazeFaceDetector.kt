@@ -101,17 +101,17 @@ class BlazeFaceDetector @Inject constructor(
         val rawDetections = mutableListOf<RawDetection>()
 
         // Pass 1: Full-frame letterboxed scan
-        rawDetections.addAll(
-            runTileInference(
-                interp = interp,
-                source = bitmap,
-                tileRect = RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
-                minScore = MIN_SCORE
-            )
+        val pass1 = runTileInference(
+            interp = interp,
+            source = bitmap,
+            tileRect = RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
+            minScore = MIN_SCORE
         )
+        rawDetections.addAll(pass1)
 
-        // Pass 2: Overlapping 2x2 + center tiles for high-resolution / group photos
-        if (bitmap.width >= 800 && bitmap.height >= 800) {
+        // Adaptive Pass 2: Run 2x2 overlapping tiles only when Pass 1 found 0 faces (small distant faces)
+        // or >= 2 faces (group photo), making single-portrait photos 6x faster!
+        if ((pass1.isEmpty() || pass1.size >= 2) && bitmap.width >= 960 && bitmap.height >= 960) {
             val w = bitmap.width.toFloat()
             val h = bitmap.height.toFloat()
             val tileW = w * 0.62f
@@ -120,8 +120,7 @@ class BlazeFaceDetector @Inject constructor(
                 RectF(0f, 0f, tileW, tileH),
                 RectF(w - tileW, 0f, w, tileH),
                 RectF(0f, h - tileH, tileW, h),
-                RectF(w - tileW, h - tileH, w, h),
-                RectF(w * 0.19f, h * 0.19f, w * 0.81f, h * 0.81f)
+                RectF(w - tileW, h - tileH, w, h)
             )
             for (tile in tiles) {
                 rawDetections.addAll(

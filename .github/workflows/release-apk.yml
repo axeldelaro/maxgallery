@@ -79,15 +79,15 @@ jobs:
         run: |
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "$TAG_NAME" != v* ]]; then
-            TAG_NAME="v1.0.0"
+            TAG_NAME="v2.0.0"
           fi
 
-          NOTES="## HyperGallery AI — APK Natif Signé (100 % Hors-Ligne & Privé)
+          NOTES="## HyperGallery AI v2.0.0 — Moteur Turbo Médias Masqués & IA Locale (100 % Hors-Ligne)
 
-          - **Zéro permission Internet** (\`android.permission.INTERNET\` absente du manifeste final)
-          - **IA Locale Embarquée** : BlazeFace + Alignement Affine 5 points + MobileFaceNet 192-D + DBSCAN + Détecteur de doublons 64-bit \`dHash\`
-          - **Sécurité Matérielle** : Verrouillage de dossier sur place (\`BiometricPrompt\`) + Coffre-Fort chiffré **AES-256-GCM** (\`Android Keystore\`) avec déchiffrement en flux RAM et \`FLAG_SECURE\`
-          - **Ultra-Rapide 120 Hz** : Jetpack Compose Material 3 Noir Pur AMOLED, Room WAL + Paging 3, support Pro RAW, Visionneuse tuilée 25x, Diaporama Ken Burns IA & Lecteur Vidéo Media3 ExoPlayer gestuel."
+          - **Mode Exclusif Médias Masqués Uniquement** : Scanne et affiche exclusivement les médias cachés (\`.nomedia\`, dossiers/fichiers \`.point\`, et fichiers déguisés \`.bin/.dat/.tmp/.lock\` détectés par signature binaire Magic Bytes).
+          - **Scan Parallèle Multi-Cœurs en 2 Phases** : Découverte instantanée sans blocage I/O + transactions batch SQLite Room WAL (600 entrées/transaction) + enrichissement EXIF/dHash asynchrone en tâche de fond.
+          - **IA Locale Accélérée** : Indexation directe en mémoire sans latence WorkManager + BlazeFace pyramidal adaptatif (6× plus rapide) + MobileFaceNet 192-D + DBSCAN + Détecteur de doublons 64-bit \`dHash\`.
+          - **Zéro permission Internet** (\`android.permission.INTERNET\` absente du manifeste final)."
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" \

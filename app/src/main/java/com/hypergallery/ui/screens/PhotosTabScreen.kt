@@ -21,11 +21,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -85,6 +87,8 @@ fun PhotosTabScreen(
     val activeFilters by viewModel.activeFilters.collectAsState()
     val selectedIds by viewModel.selectedMediaIds.collectAsState()
     val isScanning by viewModel.isScanningMedia.collectAsState()
+    val scanProgress by viewModel.scanProgress.collectAsState()
+    val hiddenCount by viewModel.hiddenIndexedCount.collectAsState()
     val memories by viewModel.memoriesToday.collectAsState()
     val folders by viewModel.folders.collectAsState()
     val sensitiveUnlocked by viewModel.securitySessionManager.isSensitiveContentActive.collectAsState()
@@ -94,7 +98,7 @@ fun PhotosTabScreen(
     var showSearchBar by remember { mutableStateOf(false) }
     var showSortSheet by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
-    var copyOrMoveMode by remember { mutableStateOf<Boolean?>(null) } // false=copy, true=move
+    var copyOrMoveMode by remember { mutableStateOf<Boolean?>(null) }
     var showPinForHidden by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -106,18 +110,52 @@ fun PhotosTabScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "HyperGallery AI",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.ExtraBold
-                )
-                if (settings.whitelistModeEnabled) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "Mode Liste Blanche actif",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.primary
+                        text = "HyperGallery AI",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.ExtraBold
                     )
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        color = if (settings.onlyHiddenMediaMode) Color(0xFF00E676).copy(alpha = 0.18f)
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.clickable {
+                            viewModel.toggleOnlyHiddenMediaMode(!settings.onlyHiddenMediaMode)
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Shield,
+                                contentDescription = null,
+                                tint = if (settings.onlyHiddenMediaMode) Color(0xFF00E676) else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = if (settings.onlyHiddenMediaMode) "Masqués uniquement" else "Tous médias",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (settings.onlyHiddenMediaMode) Color(0xFF00E676) else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
+                Text(
+                    text = if (isScanning) {
+                        "Scan Turbo : ${scanProgress.scannedDirectories} dossiers • ${scanProgress.hiddenMediaFound} médias masqués (${scanProgress.currentFolder})"
+                    } else {
+                        "$hiddenCount médias masqués détectés (.nomedia, .point & déguisés)" +
+                            if (scanProgress.elapsedMs > 0) " • ${scanProgress.elapsedMs} ms" else ""
+                    },
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1
+                )
             }
 
             // 1-Tap Relock Padlock when any locked folder or vault session is active
@@ -132,31 +170,6 @@ fun PhotosTabScreen(
                         tint = MaterialTheme.colorScheme.tertiary
                     )
                 }
-            }
-
-            // Quick toggle for Hidden Files (.dot & .nomedia)
-            IconButton(onClick = {
-                val targetShow = !settings.showHiddenFiles
-                if (targetShow && settings.protectHiddenWithBiometric && activity != null) {
-                    viewModel.biometricAuthManager.authenticate(
-                        activity = activity,
-                        title = "Afficher les fichiers cachés",
-                        onSuccess = {
-                            viewModel.securitySessionManager.authorizeHiddenFilesSession()
-                            scope.launch { viewModel.settingsRepository.updateShowHidden(true) }
-                        },
-                        onUsePinFallback = { showPinForHidden = true },
-                        onError = { viewModel.emitMessage(it) }
-                    )
-                } else {
-                    scope.launch { viewModel.settingsRepository.updateShowHidden(targetShow) }
-                }
-            }) {
-                Icon(
-                    imageVector = if (settings.showHiddenFiles) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
-                    contentDescription = "Fichiers cachés (. et .nomedia)",
-                    tint = if (settings.showHiddenFiles) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
 
             IconButton(onClick = { showSearchBar = !showSearchBar }) {
@@ -178,7 +191,7 @@ fun PhotosTabScreen(
             }
 
             IconButton(onClick = { viewModel.triggerFullMediaScan() }) {
-                Icon(Icons.Filled.Refresh, contentDescription = "Actualiser")
+                Icon(Icons.Filled.Refresh, contentDescription = "Scan Turbo")
             }
         }
 
@@ -191,7 +204,7 @@ fun PhotosTabScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { viewModel.setSearchQuery(it) },
-                placeholder = { Text("Nom, dossier, appareil EXIF ou prénom IA...") },
+                placeholder = { Text("Nom, dossier masqué, appareil EXIF ou prénom IA...") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
                     IconButton(onClick = {
@@ -208,7 +221,7 @@ fun PhotosTabScreen(
             )
         }
 
-        // Cumulable Instant Quick Filters Row
+        // Cumulable Instant Quick Filters Row (includes Dossiers .point & Dossiers .nomedia!)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -219,7 +232,7 @@ fun PhotosTabScreen(
             FilterChip(
                 selected = activeFilters.isEmpty(),
                 onClick = { viewModel.clearFilters() },
-                label = { Text("Tout") }
+                label = { Text(if (settings.onlyHiddenMediaMode) "Tous masqués" else "Tout") }
             )
             QuickFilter.entries.forEach { filter ->
                 FilterChip(
@@ -266,10 +279,10 @@ fun PhotosTabScreen(
                 onSelectGroup = { groupKey -> viewModel.selectEntireGroup(groupKey) },
                 topHeaderContent = {
                     Column {
-                        // Full Storage Access Banner (MANAGE_EXTERNAL_STORAGE)
+                        // Critical Full Storage Access Banner (MANAGE_EXTERNAL_STORAGE required by Android 11+ to read .nomedia & dot folders)
                         if (!hasFullStoragePermission) {
                             Surface(
-                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                color = MaterialTheme.colorScheme.errorContainer,
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -282,23 +295,25 @@ fun PhotosTabScreen(
                                     Icon(
                                         Icons.Filled.FolderSpecial,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                        tint = MaterialTheme.colorScheme.onErrorContainer
                                     )
                                     Spacer(Modifier.width(10.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "Accès complet aux fichiers recommandé",
+                                            text = "Permission requise pour les médias masqués",
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp
+                                            fontSize = 13.sp,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
                                         )
                                         Text(
-                                            text = "Activez MANAGE_EXTERNAL_STORAGE pour gérer les dossiers .nomedia, RAW, Carte SD et USB OTG.",
-                                            fontSize = 11.sp
+                                            text = "Android bloque les dossiers .nomedia et .cachés sans MANAGE_EXTERNAL_STORAGE. Activez-le pour un scan complet.",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
                                         )
                                     }
                                     Spacer(Modifier.width(8.dp))
                                     Button(onClick = onRequestFullStoragePermission) {
-                                        Text("Activer", fontSize = 12.sp)
+                                        Text("Autoriser", fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -308,7 +323,7 @@ fun PhotosTabScreen(
                         if (settings.memoriesEnabled && memories.isNotEmpty() && activeFilters.isEmpty() && searchQuery.isEmpty()) {
                             Column(modifier = Modifier.padding(vertical = 8.dp)) {
                                 Text(
-                                    text = "Souvenirs de ce jour (${memories.size})",
+                                    text = "Souvenirs masqués de ce jour (${memories.size})",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)

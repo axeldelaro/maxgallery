@@ -41,7 +41,9 @@ enum class QuickFilter(val label: String) {
     RAW("Fichiers RAW"),
     ANIMATED("GIFs & WebP animés"),
     SCREENSHOTS("Captures d'écran"),
-    LARGE_FILES("Gros fichiers (> 50 Mo)")
+    LARGE_FILES("Gros fichiers (> 50 Mo)"),
+    DOT_HIDDEN("Dossiers .point"),
+    NOMEDIA("Dossiers .nomedia")
 }
 
 @Serializable
@@ -88,15 +90,27 @@ data class AppSettings(
     val folderListSort: SortCriterion = SortCriterion.ITEM_COUNT,
     val folderListSortAsc: Boolean = false,
     val groupMode: GroupMode = GroupMode.DAY,
-    val showHiddenFiles: Boolean = false,
+    val showHiddenFiles: Boolean = true,
+    val onlyHiddenMediaMode: Boolean = true,
+    val deepScanDisguisedMedia: Boolean = true,
     val protectHiddenWithBiometric: Boolean = false,
     val whitelistModeEnabled: Boolean = false,
     val memoriesEnabled: Boolean = true,
     val faceAiEnabled: Boolean = true,
     val faceClusterThreshold: Float = 0.40f,
-    val faceScanOnlyChargingOrHighBattery: Boolean = true,
+    val faceScanOnlyChargingOrHighBattery: Boolean = false,
     val faceScanThermalProtection: Boolean = true,
     val shuffleSeed: Int = 42_1337
+)
+
+data class ScanProgressInfo(
+    val isScanning: Boolean = false,
+    val scannedDirectories: Int = 0,
+    val hiddenFoldersFound: Int = 0,
+    val hiddenMediaFound: Int = 0,
+    val disguisedMediaFound: Int = 0,
+    val elapsedMs: Long = 0L,
+    val currentFolder: String = ""
 )
 
 data class FolderSummary(
@@ -180,7 +194,7 @@ data class BackupPersonLabel(
 
 @Serializable
 data class BackupPayload(
-    val version: Int = 1,
+    val version: Int = 2,
     val exportedAt: Long,
     val settings: AppSettings,
     val folderRules: List<BackupFolderRule>,

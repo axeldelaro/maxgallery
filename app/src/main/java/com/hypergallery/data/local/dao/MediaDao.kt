@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.Transaction
 import androidx.room.Update
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.hypergallery.data.local.entity.FaceEntity
@@ -65,6 +66,10 @@ interface MediaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertOne(item: MediaEntity): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Transaction
+    suspend fun upsertBatch(items: List<MediaEntity>)
+
     @Update
     suspend fun updateOne(item: MediaEntity)
 
@@ -80,11 +85,14 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE id IN (:ids)")
     suspend fun getByIds(ids: List<Long>): List<MediaEntity>
 
-    @Query("SELECT path, dateModified, isFavorite, faceScanned, dHash, id FROM media_items")
+    @Query("SELECT path, dateModified, isFavorite, faceScanned, dHash, id, width, height FROM media_items")
     suspend fun getAllPathSnapshots(): List<MediaSnapshotRow>
 
     @Query("DELETE FROM media_items WHERE path IN (:paths)")
     suspend fun deleteByPaths(paths: List<String>)
+
+    @Query("DELETE FROM media_items WHERE isHidden = 0 AND hasNoMediaParent = 0")
+    suspend fun deleteAllPublicMedia()
 
     @Query("DELETE FROM media_items WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
@@ -107,6 +115,9 @@ interface MediaDao {
     @Query("UPDATE media_items SET faceScanned = :scanned WHERE id = :mediaId")
     suspend fun markFaceScanned(mediaId: Long, scanned: Boolean)
 
+    @Query("UPDATE media_items SET faceScanned = :scanned WHERE id IN (:mediaIds)")
+    suspend fun markFaceScannedBatch(mediaIds: List<Long>, scanned: Boolean)
+
     @Query("UPDATE media_items SET faceScanned = 0")
     suspend fun resetAllFaceScanned()
 
@@ -118,6 +129,7 @@ interface MediaDao {
         SELECT m.* FROM media_items m
         LEFT JOIN folder_rules r ON m.parentPath = r.path
         WHERE m.faceScanned = 0
+          AND (:onlyHidden = 0 OR m.isHidden = 1 OR m.hasNoMediaParent = 1)
           AND m.isLockedFolder = 0
           AND COALESCE(r.isLocked, 0) = 0
           AND COALESCE(r.excludeFromFaceAi, 0) = 0
@@ -126,7 +138,7 @@ interface MediaDao {
         LIMIT :batchSize
         """
     )
-    suspend fun getUnscannedForFaceAi(batchSize: Int): List<MediaEntity>
+    suspend fun getUnscannedForFaceAi(batchSize: Int, onlyHidden: Boolean = true): List<MediaEntity>
 
     @Query(
         """
@@ -179,11 +191,15 @@ interface MediaDao {
           AND m.isLockedFolder = 0
           AND COALESCE(r.isLocked, 0) = 0
           AND COALESCE(r.exclusionMode, 'NONE') != 'EXCLUDE_COMPLETELY'
+          AND (:onlyHidden = 0 OR m.isHidden = 1 OR m.hasNoMediaParent = 1)
           AND (:includeHidden = 1 OR (m.isHidden = 0 AND m.hasNoMediaParent = 0))
         ORDER BY m.sizeBytes DESC
         """
     )
-    suspend fun getCandidatesForDuplicateScan(includeHidden: Boolean): List<MediaEntity>
+    suspend fun getCandidatesForDuplicateScan(
+        includeHidden: Boolean,
+        onlyHidden: Boolean = true
+    ): List<MediaEntity>
 
     @Query(
         """
@@ -191,8 +207,7 @@ interface MediaDao {
         LEFT JOIN folder_rules r ON m.parentPath = r.path
         WHERE m.isLockedFolder = 0
           AND COALESCE(r.isLocked, 0) = 0
-          AND m.isHidden = 0
-          AND m.hasNoMediaParent = 0
+          AND (:onlyHidden = 0 OR m.isHidden = 1 OR m.hasNoMediaParent = 1)
           AND COALESCE(r.exclusionMode, 'NONE') NOT IN ('EXCLUDE_TIMELINE', 'EXCLUDE_COMPLETELY')
           AND strftime('%m-%d', m.dateTaken / 1000, 'unixepoch', 'localtime') = :monthDay
           AND CAST(strftime('%Y', m.dateTaken / 1000, 'unixepoch', 'localtime') AS INTEGER) < :currentYear
@@ -200,10 +215,13 @@ interface MediaDao {
         LIMIT 30
         """
     )
-    fun observeMemoriesForDay(monthDay: String, currentYear: Int): Flow<List<MediaEntity>>
+    fun observeMemoriesForDay(monthDay: String, currentYear: Int, onlyHidden: Boolean = true): Flow<List<MediaEntity>>
 
     @Query("SELECT COUNT(*) FROM media_items")
     fun observeTotalIndexedCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM media_items WHERE isHidden = 1 OR hasNoMediaParent = 1")
+    fun observeHiddenIndexedCount(): Flow<Int>
 }
 
 data class MediaSnapshotRow(
@@ -212,5 +230,7 @@ data class MediaSnapshotRow(
     val dateModified: Long,
     val isFavorite: Boolean,
     val faceScanned: Boolean,
-    val dHash: Long
+    val dHash: Long,
+    val width: Int,
+    val height: Int
 )

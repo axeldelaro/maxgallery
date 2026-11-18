@@ -27,12 +27,17 @@ import com.hypergallery.domain.model.FaceIndexStatus
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -40,20 +45,32 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.max
 
+/**
+ * Coordinates both immediate in-process high-speed Face AI indexing (zero WorkManager scheduling latency)
+ * and WorkManager background persistence for large hidden libraries.
+ */
 @Singleton
 class FaceIndexCoordinator @Inject constructor(
     @ApplicationContext private val context: Context,
     private val mediaDao: MediaDao,
     private val faceDao: FaceDao,
     private val settingsRepository: SettingsRepository,
+    private val detector: BlazeFaceDetector,
+    private val embedder: FaceEmbedder,
     private val clusterEngine: FaceClusterEngine
 ) {
     companion object {
         const val WORK_NAME = "hypergallery_face_ai_indexing"
     }
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val engineMutex = Mutex()
     private val _isRunning = MutableStateFlow(false)
     private val _statusNote = MutableStateFlow("Prêt")
+
+    private val cropsDir: File by lazy {
+        File(context.filesDir, "face_crops").apply { if (!exists()) mkdirs() }
+    }
 
     val statusFlow: Flow<FaceIndexStatus> = combine(
         _isRunning,
@@ -72,7 +89,13 @@ class FaceIndexCoordinator @Inject constructor(
         )
     }
 
+    /**
+     * Starts immediate in-process coroutine indexing AND enqueues WorkManager backup job.
+     */
     fun enqueueIndexing() {
+        scope.launch {
+            runDirectIndexingLoop()
+        }
         val request = OneTimeWorkRequestBuilder<FaceIndexingWorker>().build()
         WorkManager.getInstance(context).enqueueUniqueWork(
             WORK_NAME,
@@ -90,13 +113,12 @@ class FaceIndexCoordinator @Inject constructor(
 
     suspend fun resumeIndexing() {
         settingsRepository.setFaceWorkerPaused(false)
-        _statusNote.value = "Analyse en cours..."
+        _statusNote.value = "Analyse IA haute vitesse..."
         enqueueIndexing()
     }
 
     suspend fun fullReindex() = withContext(Dispatchers.IO) {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
-        val cropsDir = File(context.filesDir, "face_crops")
         cropsDir.listFiles()?.forEach { it.delete() }
         faceDao.deleteAllFaces()
         faceDao.deleteAllPersons()
@@ -114,97 +136,95 @@ class FaceIndexCoordinator @Inject constructor(
         _isRunning.value = running
         _statusNote.value = note
     }
-}
 
-@HiltWorker
-class FaceIndexingWorker @AssistedInject constructor(
-    @Assisted private val appContext: Context,
-    @Assisted workerParams: WorkerParameters,
-    private val mediaDao: MediaDao,
-    private val faceDao: FaceDao,
-    private val settingsRepository: SettingsRepository,
-    private val detector: BlazeFaceDetector,
-    private val embedder: FaceEmbedder,
-    private val clusterEngine: FaceClusterEngine,
-    private val coordinator: FaceIndexCoordinator
-) : CoroutineWorker(appContext, workerParams) {
-
-    private val cropsDir: File by lazy {
-        File(appContext.filesDir, "face_crops").apply { if (!exists()) mkdirs() }
-    }
-
-    override suspend fun doWork(): Result = withContext(Dispatchers.Default) {
-        val initialSettings = settingsRepository.settingsFlow.first()
-        if (!initialSettings.faceAiEnabled) {
-            coordinator.markRunning(false, "IA désactivée")
-            return@withContext Result.success()
-        }
-
-        coordinator.markRunning(true, "Analyse IA locale active")
-        try {
-            var processedSinceCluster = 0
-            while (!isStopped) {
-                val paused = settingsRepository.isFaceWorkerPausedFlow.first()
-                if (paused) {
-                    coordinator.markRunning(false, "En pause")
-                    return@withContext Result.success()
-                }
-
-                val settings = settingsRepository.settingsFlow.first()
-                if (!settings.faceAiEnabled) {
-                    coordinator.markRunning(false, "IA désactivée")
-                    return@withContext Result.success()
-                }
-
-                // Battery guard (> 25% or charging)
-                if (settings.faceScanOnlyChargingOrHighBattery && !isBatteryHealthy()) {
-                    coordinator.markRunning(false, "En attente (Batterie < 25 % hors charge)")
-                    return@withContext Result.retry()
-                }
-
-                // Thermal guard
-                if (settings.faceScanThermalProtection && isDeviceOverheating()) {
-                    coordinator.markRunning(true, "Pause thermique de sécurité...")
-                    delay(8_000L)
-                    continue
-                }
-
-                val batch = mediaDao.getUnscannedForFaceAi(batchSize = 20)
-                if (batch.isEmpty()) {
-                    clusterEngine.clusterIncremental(settings.faceClusterThreshold)
-                    coordinator.markRunning(false, "Indexation terminée")
-                    return@withContext Result.success()
-                }
-
-                for (media in batch) {
-                    if (isStopped || settingsRepository.isFaceWorkerPausedFlow.first()) break
-                    processSingleMedia(media)
-                    mediaDao.markFaceScanned(media.id, true)
-                    processedSinceCluster++
-                }
-
-                if (processedSinceCluster >= 20) {
-                    clusterEngine.clusterIncremental(settings.faceClusterThreshold)
-                    processedSinceCluster = 0
-                }
+    internal suspend fun runDirectIndexingLoop(): Boolean {
+        if (engineMutex.isLocked) return true
+        return engineMutex.withLock {
+            val initialSettings = settingsRepository.settingsFlow.first()
+            if (!initialSettings.faceAiEnabled) {
+                markRunning(false, "IA désactivée")
+                return@withLock true
             }
-            Result.success()
-        } catch (_: Exception) {
-            coordinator.markRunning(false, "Prêt")
-            Result.retry()
+
+            markRunning(true, "Analyse IA locale haute vitesse...")
+            try {
+                var processedSinceCluster = 0
+                while (true) {
+                    if (settingsRepository.isFaceWorkerPausedFlow.first()) {
+                        markRunning(false, "En pause")
+                        return@withLock true
+                    }
+
+                    val settings = settingsRepository.settingsFlow.first()
+                    if (!settings.faceAiEnabled) {
+                        markRunning(false, "IA désactivée")
+                        return@withLock true
+                    }
+
+                    if (settings.faceScanOnlyChargingOrHighBattery && !isBatteryHealthy()) {
+                        markRunning(false, "En attente (Batterie < 25 % hors charge)")
+                        return@withLock false
+                    }
+
+                    if (settings.faceScanThermalProtection && isDeviceOverheating()) {
+                        markRunning(true, "Pause thermique de sécurité...")
+                        delay(6_000L)
+                        continue
+                    }
+
+                    val batch = mediaDao.getUnscannedForFaceAi(
+                        batchSize = 48,
+                        onlyHidden = settings.onlyHiddenMediaMode
+                    )
+                    if (batch.isEmpty()) {
+                        clusterEngine.clusterIncremental(settings.faceClusterThreshold)
+                        markRunning(false, "Indexation IA terminée")
+                        return@withLock true
+                    }
+
+                    val scannedIds = ArrayList<Long>(batch.size)
+                    val detectedFaceEntities = ArrayList<FaceEntity>(batch.size * 2)
+
+                    for (media in batch) {
+                        if (settingsRepository.isFaceWorkerPausedFlow.first()) break
+                        val faces = extractFacesFromMedia(media)
+                        if (faces.isNotEmpty()) {
+                            detectedFaceEntities.addAll(faces)
+                        }
+                        scannedIds.add(media.id)
+                        processedSinceCluster++
+                    }
+
+                    if (detectedFaceEntities.isNotEmpty()) {
+                        faceDao.insertFaces(detectedFaceEntities)
+                    }
+                    if (scannedIds.isNotEmpty()) {
+                        mediaDao.markFaceScannedBatch(scannedIds, true)
+                    }
+
+                    if (processedSinceCluster >= 32) {
+                        clusterEngine.clusterIncremental(settings.faceClusterThreshold)
+                        processedSinceCluster = 0
+                    }
+                }
+                true
+            } catch (_: Exception) {
+                markRunning(false, "Prêt")
+                false
+            }
         }
     }
 
-    private suspend fun processSingleMedia(media: MediaEntity) {
+    private fun extractFacesFromMedia(media: MediaEntity): List<FaceEntity> {
         val file = File(media.path)
-        if (!file.exists()) return
-        val bitmap = decodeAnalysisBitmap(media, file) ?: return
+        if (!file.exists()) return emptyList()
+        val bitmap = decodeAnalysisBitmap(media, file) ?: return emptyList()
 
         try {
             val detections = detector.detectFaces(bitmap)
-            if (detections.isEmpty()) return
+            if (detections.isEmpty()) return emptyList()
 
-            val entities = mutableListOf<FaceEntity>()
+            val entities = ArrayList<FaceEntity>(detections.size)
             for (det in detections) {
                 val aligned112 = FaceAligner.alignTo112(bitmap, det.landmarks5Px)
                 val embedding = try {
@@ -230,9 +250,7 @@ class FaceIndexingWorker @AssistedInject constructor(
                     )
                 )
             }
-            if (entities.isNotEmpty()) {
-                faceDao.insertFaces(entities)
-            }
+            return entities
         } finally {
             bitmap.recycle()
         }
@@ -250,14 +268,14 @@ class FaceIndexingWorker @AssistedInject constructor(
                     retriever.release()
                 }
             } else if (media.isRaw) {
-                RawPreviewExtractor.decodePreviewBitmap(file, targetMaxSide = 1280)
+                RawPreviewExtractor.decodePreviewBitmap(file, targetMaxSide = 960)
             } else {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(file.absolutePath, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
                 val maxSide = max(bounds.outWidth, bounds.outHeight)
                 var sample = 1
-                while (maxSide / (sample * 2) >= 1280) {
+                while (maxSide / (sample * 2) >= 960) {
                     sample *= 2
                 }
                 val rawBmp = BitmapFactory.decodeFile(
@@ -295,7 +313,7 @@ class FaceIndexingWorker @AssistedInject constructor(
     }
 
     private fun isBatteryHealthy(): Boolean {
-        val status = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val status = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             ?: return true
         val plugged = status.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
         if (plugged) return true
@@ -308,7 +326,20 @@ class FaceIndexingWorker @AssistedInject constructor(
 
     private fun isDeviceOverheating(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
-        val pm = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
         return pm.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
+    }
+}
+
+@HiltWorker
+class FaceIndexingWorker @AssistedInject constructor(
+    @Assisted appContext: Context,
+    @Assisted workerParams: WorkerParameters,
+    private val coordinator: FaceIndexCoordinator
+) : CoroutineWorker(appContext, workerParams) {
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.Default) {
+        val ok = coordinator.runDirectIndexingLoop()
+        if (ok) Result.success() else Result.retry()
     }
 }

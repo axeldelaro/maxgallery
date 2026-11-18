@@ -35,6 +35,7 @@ import com.hypergallery.domain.model.FolderExclusionMode
 import com.hypergallery.domain.model.FolderSummary
 import com.hypergallery.domain.model.GroupMode
 import com.hypergallery.domain.model.QuickFilter
+import com.hypergallery.domain.model.ScanProgressInfo
 import com.hypergallery.domain.model.SlideshowConfig
 import com.hypergallery.domain.model.SortCriterion
 import com.hypergallery.domain.model.ThemeMode
@@ -122,11 +123,16 @@ class GalleryViewModel @Inject constructor(
     val snackbarMessage = _snackbarMessage.asSharedFlow()
 
     val isScanningMedia: StateFlow<Boolean> = scanner.isScanning
+    val scanProgress: StateFlow<ScanProgressInfo> = scanner.scanProgress
 
     val totalIndexedCount: StateFlow<Int> = mediaDao.observeTotalIndexedCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val memoriesToday: StateFlow<List<MediaEntity>> = repository.observeMemoriesToday()
+    val hiddenIndexedCount: StateFlow<Int> = mediaDao.observeHiddenIndexedCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val memoriesToday: StateFlow<List<MediaEntity>> = settings
+        .flatMapLatest { cfg -> repository.observeMemoriesToday(cfg.onlyHiddenMediaMode) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val faceIndexStatus: StateFlow<FaceIndexStatus> = faceCoordinator.statusFlow
@@ -154,10 +160,12 @@ class GalleryViewModel @Inject constructor(
         _activeFilters,
         securitySessionManager.isHiddenSessionAuthorized
     ) { cfg, query, filters, hiddenAuth ->
-        val effectiveHidden = cfg.showHiddenFiles && (!cfg.protectHiddenWithBiometric || hiddenAuth)
+        val effectiveHidden = cfg.onlyHiddenMediaMode ||
+            (cfg.showHiddenFiles && (!cfg.protectHiddenWithBiometric || hiddenAuth))
         val spec = MediaQuerySpec(
             folderPath = null,
             showHidden = effectiveHidden,
+            onlyHiddenMediaMode = cfg.onlyHiddenMediaMode,
             whitelistEnabled = cfg.whitelistModeEnabled,
             filters = filters,
             searchQuery = query,
@@ -187,12 +195,14 @@ class GalleryViewModel @Inject constructor(
         val customSort = rule?.sortCriterion?.let { runCatching { SortCriterion.valueOf(it) }.getOrNull() }
         val effectiveSort = customSort ?: cfg.defaultSort
         val effectiveAsc = rule?.sortAscending ?: cfg.defaultSortAsc
-        val effectiveHidden = cfg.showHiddenFiles && (!cfg.protectHiddenWithBiometric || hiddenAuth)
+        val effectiveHidden = cfg.onlyHiddenMediaMode ||
+            (cfg.showHiddenFiles && (!cfg.protectHiddenWithBiometric || hiddenAuth))
 
         MediaQuerySpec(
             folderPath = folderPath,
             isUnlockedSessionForFolder = folderPath in unlockedSet,
             showHidden = effectiveHidden || File(folderPath, ".nomedia").exists() || File(folderPath).name.startsWith("."),
+            onlyHiddenMediaMode = false, // Inside an opened folder, show all its discovered contents
             sortCriterion = effectiveSort,
             sortAscending = effectiveAsc,
             shuffleSeed = cfg.shuffleSeed
@@ -213,7 +223,8 @@ class GalleryViewModel @Inject constructor(
         if (personIds.isEmpty()) return@combine null
         MediaQuerySpec(
             personIds = personIds,
-            showHidden = cfg.showHiddenFiles && !cfg.protectHiddenWithBiometric,
+            showHidden = true,
+            onlyHiddenMediaMode = cfg.onlyHiddenMediaMode,
             sortCriterion = cfg.defaultSort,
             sortAscending = cfg.defaultSortAsc,
             shuffleSeed = cfg.shuffleSeed
@@ -231,14 +242,16 @@ class GalleryViewModel @Inject constructor(
         settings,
         securitySessionManager.isHiddenSessionAuthorized
     ) { cfg, hiddenAuth ->
-        val effectiveHidden = cfg.showHiddenFiles && (!cfg.protectHiddenWithBiometric || hiddenAuth)
-        Triple(effectiveHidden, cfg.whitelistModeEnabled, cfg.folderListSort to cfg.folderListSortAsc)
-    }.flatMapLatest { (showHidden, whitelist, sortPair) ->
+        val effectiveHidden = cfg.onlyHiddenMediaMode ||
+            (cfg.showHiddenFiles && (!cfg.protectHiddenWithBiometric || hiddenAuth))
+        cfg to effectiveHidden
+    }.flatMapLatest { (cfg, showHidden) ->
         repository.observeFolders(
             showHidden = showHidden,
-            whitelistEnabled = whitelist,
-            sortCriterion = sortPair.first,
-            ascending = sortPair.second
+            onlyHiddenMode = cfg.onlyHiddenMediaMode,
+            whitelistEnabled = cfg.whitelistModeEnabled,
+            sortCriterion = cfg.folderListSort,
+            ascending = cfg.folderListSortAsc
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -294,7 +307,8 @@ class GalleryViewModel @Inject constructor(
             val spec = MediaQuerySpec(
                 folderPath = folderPath,
                 isUnlockedSessionForFolder = folderPath != null && securitySessionManager.isFolderUnlocked(folderPath),
-                showHidden = cfg.showHiddenFiles,
+                showHidden = true,
+                onlyHiddenMediaMode = cfg.onlyHiddenMediaMode && folderPath == null,
                 whitelistEnabled = cfg.whitelistModeEnabled,
                 filters = _activeFilters.value,
                 searchQuery = _searchQuery.value,
@@ -322,8 +336,7 @@ class GalleryViewModel @Inject constructor(
         if (dirPath != null) {
             viewModelScope.launch {
                 val cfg = settings.value
-                val showHidden = cfg.showHiddenFiles &&
-                    (!cfg.protectHiddenWithBiometric || securitySessionManager.isHiddenSessionAuthorized.value)
+                val showHidden = cfg.onlyHiddenMediaMode || cfg.showHiddenFiles
                 _treeNodes.value = fileManager.listDirectoryNodes(dirPath, showHidden)
             }
         } else {
@@ -357,7 +370,8 @@ class GalleryViewModel @Inject constructor(
         val spec = MediaQuerySpec(
             folderPath = folderPath,
             isUnlockedSessionForFolder = folderPath != null && securitySessionManager.isFolderUnlocked(folderPath),
-            showHidden = cfg.showHiddenFiles || (folderPath != null && File(folderPath, ".nomedia").exists()),
+            showHidden = true,
+            onlyHiddenMediaMode = cfg.onlyHiddenMediaMode && folderPath == null,
             whitelistEnabled = cfg.whitelistModeEnabled && folderPath == null,
             filters = filters,
             searchQuery = if (folderPath == null && personIds.isEmpty() && !favoritesOnly) _searchQuery.value else "",
@@ -423,7 +437,8 @@ class GalleryViewModel @Inject constructor(
                 MediaQuerySpec(
                     folderPath = folderPath,
                     isUnlockedSessionForFolder = folderPath != null && securitySessionManager.isFolderUnlocked(folderPath),
-                    showHidden = cfg.showHiddenFiles,
+                    showHidden = true,
+                    onlyHiddenMediaMode = cfg.onlyHiddenMediaMode && folderPath == null,
                     whitelistEnabled = cfg.whitelistModeEnabled && folderPath == null,
                     filters = if (favoritesOnly) setOf(QuickFilter.FAVORITES) else _activeFilters.value,
                     personIds = personIds,
@@ -434,7 +449,7 @@ class GalleryViewModel @Inject constructor(
             )
         }
         if (list.isEmpty()) {
-            emitMessage("Aucun média à afficher dans le diaporama")
+            emitMessage("Aucun média masqué à afficher dans le diaporama")
             return false
         }
         _viewerItems.value = list
@@ -589,9 +604,10 @@ class GalleryViewModel @Inject constructor(
         viewModelScope.launch {
             val created = fileManager.toggleNoMedia(path)
             emitMessage(
-                if (created) "Fichier .nomedia créé (masqué aux autres apps)"
-                else "Fichier .nomedia supprimé (visible aux autres apps)"
+                if (created) "Fichier .nomedia créé (ce dossier est désormais masqué)"
+                else "Fichier .nomedia supprimé (ce dossier est redevenu public)"
             )
+            triggerFullMediaScan()
             _treeCurrentDir.value?.let { navigateFileTree(it) }
         }
     }
@@ -650,9 +666,11 @@ class GalleryViewModel @Inject constructor(
         viewModelScope.launch {
             _isScanningDuplicates.value = true
             try {
+                val cfg = settings.value
                 _duplicateGroups.value = duplicateDetector.findDuplicateGroups(
                     maxHammingDistance = 5,
-                    includeHidden = settings.value.showHiddenFiles
+                    includeHidden = true,
+                    onlyHidden = cfg.onlyHiddenMediaMode
                 )
             } finally {
                 _isScanningDuplicates.value = false
@@ -711,6 +729,17 @@ class GalleryViewModel @Inject constructor(
 
     fun setGroupMode(mode: GroupMode) {
         viewModelScope.launch { settingsRepository.updateGroupMode(mode) }
+    }
+
+    fun toggleOnlyHiddenMediaMode(onlyHidden: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateOnlyHiddenMediaMode(onlyHidden)
+            triggerFullMediaScan()
+            emitMessage(
+                if (onlyHidden) "Mode Médias Masqués Uniquement activé"
+                else "Mode Tous les Médias (Masqués + Publics) activé"
+            )
+        }
     }
 
     fun emitMessage(msg: String) {

@@ -109,7 +109,7 @@ class GalleryRepository @Inject constructor(
         return mediaDao.observeMediaList(MediaQueryBuilder.build(spec))
     }
 
-    fun observeMemoriesToday(): Flow<List<MediaEntity>> {
+    fun observeMemoriesToday(onlyHidden: Boolean = true): Flow<List<MediaEntity>> {
         val cal = Calendar.getInstance()
         val monthDay = String.format(
             Locale.US,
@@ -118,11 +118,12 @@ class GalleryRepository @Inject constructor(
             cal.get(Calendar.DAY_OF_MONTH)
         )
         val year = cal.get(Calendar.YEAR)
-        return mediaDao.observeMemoriesForDay(monthDay, year)
+        return mediaDao.observeMemoriesForDay(monthDay, year, onlyHidden)
     }
 
     fun observeFolders(
         showHidden: Boolean,
+        onlyHiddenMode: Boolean,
         whitelistEnabled: Boolean,
         sortCriterion: SortCriterion,
         ascending: Boolean
@@ -140,7 +141,9 @@ class GalleryRepository @Inject constructor(
 
                 if (mode == FolderExclusionMode.EXCLUDE_COMPLETELY) return@mapNotNull null
                 if (whitelistEnabled && mode != FolderExclusionMode.WHITELIST_INCLUDED) return@mapNotNull null
-                if (!showHidden && (row.isHidden || row.hasNoMediaParent)) return@mapNotNull null
+                val isMaskedFolder = row.isHidden || row.hasNoMediaParent
+                if (onlyHiddenMode && !isMaskedFolder) return@mapNotNull null
+                if (!onlyHiddenMode && !showHidden && isMaskedFolder) return@mapNotNull null
 
                 FolderSummary(
                     path = row.parentPath,

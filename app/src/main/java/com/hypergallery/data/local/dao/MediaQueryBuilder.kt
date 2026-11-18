@@ -8,7 +8,8 @@ import com.hypergallery.domain.model.SortCriterion
 data class MediaQuerySpec(
     val folderPath: String? = null,
     val isUnlockedSessionForFolder: Boolean = false,
-    val showHidden: Boolean = false,
+    val showHidden: Boolean = true,
+    val onlyHiddenMediaMode: Boolean = true,
     val whitelistEnabled: Boolean = false,
     val filters: Set<QuickFilter> = emptySet(),
     val searchQuery: String = "",
@@ -48,7 +49,10 @@ object MediaQueryBuilder {
             }
         }
 
-        if (!spec.showHidden) {
+        // Exclusive Masked/Hidden Media Mode vs Standard Mode
+        if (spec.onlyHiddenMediaMode) {
+            sb.append(" AND (m.isHidden = 1 OR m.hasNoMediaParent = 1)")
+        } else if (!spec.showHidden) {
             sb.append(" AND m.isHidden = 0 AND m.hasNoMediaParent = 0")
         }
 
@@ -72,6 +76,12 @@ object MediaQueryBuilder {
         }
         if (QuickFilter.LARGE_FILES in spec.filters) {
             sb.append(" AND m.sizeBytes >= 52428800")
+        }
+        if (QuickFilter.DOT_HIDDEN in spec.filters) {
+            sb.append(" AND m.isHidden = 1")
+        }
+        if (QuickFilter.NOMEDIA in spec.filters) {
+            sb.append(" AND m.hasNoMediaParent = 1")
         }
 
         // Combined Multi-Face Co-occurrence filter (1, 2, 3+ people simultaneously)

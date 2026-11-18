@@ -38,6 +38,8 @@ class SettingsRepository @Inject constructor(
         val FOLDER_SORT_ASC = booleanPreferencesKey("folder_sort_asc")
         val GROUP_MODE = stringPreferencesKey("group_mode")
         val SHOW_HIDDEN = booleanPreferencesKey("show_hidden")
+        val ONLY_HIDDEN_MODE = booleanPreferencesKey("only_hidden_media_mode")
+        val DEEP_SCAN_DISGUISED = booleanPreferencesKey("deep_scan_disguised_media")
         val PROTECT_HIDDEN_BIO = booleanPreferencesKey("protect_hidden_bio")
         val WHITELIST_ENABLED = booleanPreferencesKey("whitelist_enabled")
         val MEMORIES_ENABLED = booleanPreferencesKey("memories_enabled")
@@ -66,13 +68,15 @@ class SettingsRepository @Inject constructor(
             folderListSortAsc = prefs[Keys.FOLDER_SORT_ASC] ?: false,
             groupMode = prefs[Keys.GROUP_MODE]?.let { runCatching { GroupMode.valueOf(it) }.getOrNull() }
                 ?: GroupMode.DAY,
-            showHiddenFiles = prefs[Keys.SHOW_HIDDEN] ?: false,
+            showHiddenFiles = prefs[Keys.SHOW_HIDDEN] ?: true,
+            onlyHiddenMediaMode = prefs[Keys.ONLY_HIDDEN_MODE] ?: true,
+            deepScanDisguisedMedia = prefs[Keys.DEEP_SCAN_DISGUISED] ?: true,
             protectHiddenWithBiometric = prefs[Keys.PROTECT_HIDDEN_BIO] ?: false,
             whitelistModeEnabled = prefs[Keys.WHITELIST_ENABLED] ?: false,
             memoriesEnabled = prefs[Keys.MEMORIES_ENABLED] ?: true,
             faceAiEnabled = prefs[Keys.FACE_AI_ENABLED] ?: true,
             faceClusterThreshold = (prefs[Keys.FACE_THRESHOLD] ?: 0.40f).coerceIn(0.20f, 0.65f),
-            faceScanOnlyChargingOrHighBattery = prefs[Keys.FACE_BATTERY_GUARD] ?: true,
+            faceScanOnlyChargingOrHighBattery = prefs[Keys.FACE_BATTERY_GUARD] ?: false,
             faceScanThermalProtection = prefs[Keys.FACE_THERMAL_GUARD] ?: true,
             shuffleSeed = prefs[Keys.SHUFFLE_SEED] ?: 42_1337
         )
@@ -129,6 +133,19 @@ class SettingsRepository @Inject constructor(
         context.dataStore.edit { it[Keys.SHOW_HIDDEN] = show }
     }
 
+    suspend fun updateOnlyHiddenMediaMode(onlyHidden: Boolean) {
+        context.dataStore.edit {
+            it[Keys.ONLY_HIDDEN_MODE] = onlyHidden
+            if (onlyHidden) {
+                it[Keys.SHOW_HIDDEN] = true
+            }
+        }
+    }
+
+    suspend fun updateDeepScanDisguisedMedia(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.DEEP_SCAN_DISGUISED] = enabled }
+    }
+
     suspend fun updateProtectHiddenBiometric(protect: Boolean) {
         context.dataStore.edit { it[Keys.PROTECT_HIDDEN_BIO] = protect }
     }
@@ -171,6 +188,8 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.FOLDER_SORT_ASC] = settings.folderListSortAsc
             prefs[Keys.GROUP_MODE] = settings.groupMode.name
             prefs[Keys.SHOW_HIDDEN] = settings.showHiddenFiles
+            prefs[Keys.ONLY_HIDDEN_MODE] = settings.onlyHiddenMediaMode
+            prefs[Keys.DEEP_SCAN_DISGUISED] = settings.deepScanDisguisedMedia
             prefs[Keys.PROTECT_HIDDEN_BIO] = settings.protectHiddenWithBiometric
             prefs[Keys.WHITELIST_ENABLED] = settings.whitelistModeEnabled
             prefs[Keys.MEMORIES_ENABLED] = settings.memoriesEnabled

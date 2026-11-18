@@ -516,12 +516,24 @@ fun VaultAndToolsTabScreen(
         HorizontalDivider()
 
         // Hidden Files & Security Settings
-        Text("Fichiers Cachés & Biométrie", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("Moteur de Scan & Médias Masqués", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         SettingSwitchItem(
-            title = "Afficher les dossiers et fichiers cachés (. et .nomedia)",
-            subtitle = "Révèle les dossiers commençant par un point et ceux contenant .nomedia",
-            checked = settings.showHiddenFiles,
-            onCheckedChange = { scope.launch { viewModel.settingsRepository.updateShowHidden(it) } }
+            title = "Mode Exclusif Médias Masqués Uniquement (Recommandé)",
+            subtitle = "N'indexe et n'affiche que les médias situés dans des dossiers .nomedia, .point ou à extension déguisée",
+            checked = settings.onlyHiddenMediaMode,
+            onCheckedChange = { viewModel.toggleOnlyHiddenMediaMode(it) }
+        )
+
+        SettingSwitchItem(
+            title = "Détection par Signature Binaire (Magic Bytes)",
+            subtitle = "Détecte les photos/vidéos renommées en .bin, .dat, .tmp, .lock ou sans extension dans les dossiers cachés",
+            checked = settings.deepScanDisguisedMedia,
+            onCheckedChange = {
+                scope.launch {
+                    viewModel.settingsRepository.updateDeepScanDisguisedMedia(it)
+                    viewModel.triggerFullMediaScan()
+                }
+            }
         )
 
         SettingSwitchItem(

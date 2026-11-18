@@ -82,9 +82,13 @@ class DuplicateDetector @Inject constructor(
 
     suspend fun findDuplicateGroups(
         maxHammingDistance: Int = 5,
-        includeHidden: Boolean = false
+        includeHidden: Boolean = true,
+        onlyHidden: Boolean = true
     ): List<DuplicateGroup> = withContext(Dispatchers.Default) {
-        val candidates = mediaDao.getCandidatesForDuplicateScan(includeHidden)
+        val candidates = mediaDao.getCandidatesForDuplicateScan(
+            includeHidden = includeHidden,
+            onlyHidden = onlyHidden
+        )
         val valid = ArrayList<Pair<com.hypergallery.data.local.entity.MediaEntity, Long>>(candidates.size)
 
         for (item in candidates) {
